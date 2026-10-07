@@ -11,6 +11,7 @@ Observed with the locked development shell and source in this repository. These 
 * Reset smoke: a pending native store was cancelled, previous RAM contents survived, and the processor restarted successfully. A separate actual-SoC compiler smoke ran the global-memory program twice across CPU reset: both returned 42, proving startup restored its mutated global.
 * Actual CLI execution of `examples/copy.s`: PC 11, registers `[42,9,42,4294967288]`, successful halt code 42 after 10 attempted instructions. The trace included RAM store, load, register copy, PC jump and HALT store.
 * Board-neutral RTLIL and Verilog exports succeeded.
+* Documentation-only smoke: all 10 Mermaid diagrams rendered as SVG with Mermaid 11.4.1 in Chromium and were visually inspected; no syntax-error diagrams or out-of-bounds node/edge labels were observed. All 20 local Markdown links resolved, including referenced heading anchors. Rendering tools were temporary; no project runtime/toolchain dependencies changed.
 
 ### Compiler-generated execution
 

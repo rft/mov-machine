@@ -1,5 +1,24 @@
 # Formal verification
 
+## Verification map
+
+```mermaid
+flowchart LR
+    Evidence["Independent verification layers"]
+    Evidence --> Runs["mov-check<br/>finite executable scenarios"]
+    Evidence --> RTL["SymbiYosys + Z3<br/>actual RTL safety induction + covers"]
+    Evidence --> Models["TLA+ / Alloy<br/>abstract machine models"]
+    Runs --> Source["LLVM/native reference returns<br/>versus compiled MOV results"]
+    Runs --> Traces["Rust versus SoC / stalled-core traces<br/>every exercised instruction + result RAM"]
+    RTL --> Core["MovCore + independent architectural spec<br/>full-width values, symbolic buses/reset"]
+    RTL --> SoC["MovSoC + independent spec/RAM scoreboard<br/>four concrete ROMs, two RAM words"]
+    Models --> TLC["TLC: complete configured finite state space<br/>two-bit abstraction"]
+    Models --> Alloy["Alloy: bounded one-step relations<br/>assertions + satisfiable witnesses"]
+```
+
+Arrows group checks by evidence type; they are not a chain in which a small model proves RTL or a machine proof proves the compiler. Induction gives unbounded-time safety under each RTL harness's scope. Executable scenarios, finite abstract models and physical hardware measurements are different claims; no physical-board execution or whole-compiler correctness theorem is established here.
+
+
 ## Run
 
 Inside `nix develop --impure`:

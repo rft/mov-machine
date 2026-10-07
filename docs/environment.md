@@ -13,6 +13,27 @@ Added for the actual hardware workflow: SymbiYosys (`pkgs.sby`), Z3, nextpnr and
 
 Clang and LLVM (`llvmPackages.clang`, `llvmPackages.llvm`) produce/verify textual IR and supply independent native/`lli` reference execution. They are development/verification tools; the Rust compiler itself does not link LLVM or require it to parse supported textual input.
 
+```mermaid
+flowchart LR
+    Rust["Rust template"]
+    Amaranth["Amaranth template"]
+    Electronics["Electronics template"]
+    Formal["Formal template"]
+    Rust --> Config["flake/devenv configuration<br/>pinned Nix inputs + uv lock"]
+    Amaranth --> Config
+    Electronics --> Config
+    Formal --> Config
+    Config --> Shell["One development shell<br/>nix develop --impure"]
+    Shell --> Compile["Rust + Clang/LLVM<br/>compile, assemble, emulate, reference-check"]
+    Shell --> RTL["Python + Amaranth<br/>simulate and elaborate RTL"]
+    Shell --> FPGA["Yosys + nextpnr + icestorm<br/>build/program FPGA"]
+    Shell --> Prove["SymbiYosys/Z3 + TLA+/Alloy<br/>RTL proofs and abstract model checks"]
+    Shell --> Circuit["SKiDL + kinparse + matplotlib<br/>optional electronics inspection/design"]
+```
+
+These are host-side tools, not software dependencies running on the FPGA. The electronics branch is optional tooling; it is not a custom PCB deliverable or a required bitstream-build step.
+
+
 Files:
 
 * `flake.nix`/`flake.lock`: combined devenv, nixpkgs and rust-overlay inputs, pinned dependency revisions.

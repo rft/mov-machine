@@ -81,6 +81,24 @@ The program is embedded in ROM, so changing it requires rebuilding the bitstream
 
 The board exposes status, not a UART console or runtime program loader. Inspect architectural registers/halt code and decode compiled result RAM with the emulator or RTL simulation. No custom PCB is needed for this reference build. Electrical constraints are the board's 3.3 V resources; do not attach 5 V signals to FPGA pins.
 
+### Build is not programming
+
+```mermaid
+flowchart TB
+    Image["MOVM executable"] --> RTL["Amaranth SoC + iCEBreaker wrapper<br/>program embedded in instruction ROM"]
+    RTL --> Yosys["Yosys synthesis"]
+    Yosys --> PNR["nextpnr-ice40<br/>place/route + resource/timing checks"]
+    Constraints["iCEBreaker pin + 12 MHz constraints"] --> PNR
+    PNR --> Icepack["icepack"]
+    Icepack --> Bin["mov_machine.bin<br/>default mov-build stops here"]
+    Bin -. "only with explicit --program" .-> Flash["iceprog + connected board<br/>write configuration flash"]
+    Flash --> Board["FPGA loads configuration<br/>executes embedded MOV program"]
+    Board --> LEDs["Green: successful halt<br/>Red: fault"]
+```
+
+The `.bin` build and timing report have been exercised; flashing and physical execution have not. Changing the program requires rebuilding and explicitly flashing a new bitstream. LEDs indicate stop status, not the decoded source return value; simulation, formal results and place/route estimates do not substitute for a hardware run.
+
+
 Board-neutral exports:
 
 ```sh

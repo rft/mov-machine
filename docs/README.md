@@ -4,6 +4,27 @@ MOV-only FPGA processor in Amaranth, dependency-free Rust LLVM-IR compiler/assem
 
 The compiler uses memory-alias equality and table selection from Stephen Dolan's [*mov is Turing-complete*](https://drwho.virtadpt.net/files/mov.pdf). Variable arithmetic, control flow and source-memory accesses lower to the existing four MOV instructions; the FPGA has no guest ALU. [Supported LLVM subset and ABI](compiler.md).
 
+## Project at a glance
+
+```mermaid
+flowchart TB
+    C["C source"] --> Clang["Clang: emit 32-bit-pointer LLVM IR"]
+    IR["Handwritten LLVM IR"] --> Compiler["Rust LLVM-to-MOV compiler"]
+    Clang --> Compiler
+    ASM["Handwritten MOV assembly"] --> Assembler["Rust assembler"]
+    Compiler --> Image["MOVM executable<br/>MOV instructions + RAM/result metadata"]
+    Assembler --> Image
+    Image --> Emulator["Rust emulator<br/>architectural execution + decoded result"]
+    Image --> SoC["Amaranth MovSoC<br/>MovCore + instruction ROM + data RAM"]
+    SoC --> Simulation["RTL simulation<br/>trace and result comparison"]
+    SoC --> Build["iCEBreaker toolchain<br/>synthesis + place/route + icepack"]
+    Build --> Bitstream["FPGA bitstream: .bin"]
+    Bitstream -. "explicit --program; connected board required" .-> Board["Physical iCEBreaker<br/>halt/fault LEDs"]
+```
+
+The same instructions run in the emulator and RTL; the MOVM header configures loaders, not the CPU decoder. Building a bitstream is separate from programming or measuring hardware. Diagrams use editable Mermaid fenced blocks, rendered by GitHub and Mermaid-enabled Markdown viewers; other viewers show their source.
+
+
 ## Start
 
 ```sh
@@ -20,11 +41,11 @@ The example returns decoded `result: 42`; its architectural halt code identifies
 
 ## Documentation
 
-* [Usage](usage.md): LLVM/C compilation, assembly, emulator/trace CLI, FPGA build/programming and verification commands.
-* [Architecture](architecture.md): instruction encoding, memory map, reset/fault rules and RTL buses.
-* [Compiler](compiler.md): supported LLVM IR, paper correspondence, Boolean arithmetic, logical memory and return ABI.
-* [Formal verification](formal.md): RTL proof contract, finite TLA+/Alloy scopes and executable checks.
-* [Environment](environment.md): provenance and combination of Rust, Amaranth, electronics and formal templates.
+* [Usage](usage.md): LLVM/C compilation, assembly, emulator/trace CLI, and a build-versus-programming diagram.
+* [Architecture](architecture.md): instruction encoding, ROM/RAM/core connections, execution-state diagram, reset/fault rules and RTL buses.
+* [Compiler](compiler.md): lowering pipeline, paper primitives, logical-memory mapping and encoded return diagram.
+* [Formal verification](formal.md): verification-layer diagram, RTL proof contract and finite TLA+/Alloy scopes.
+* [Environment](environment.md): diagram of the combined Rust, Amaranth, electronics and formal development shell.
 * [Verification results](verification.md): exercised checks and limits.
 
 ## Source layout

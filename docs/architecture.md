@@ -55,6 +55,25 @@ MOV-to-PC supplies control flow without a branch opcode. A table lookup can sele
 * Halt/fault are sticky until reset. Stopped cores issue no requests and do not retire instructions.
 * The Rust `steps` counter counts attempted instructions, including a faulting fetch/decode; it is diagnostic, not an RTL state field. Calls to `step()` after stopping do not count.
 
+### Execution phases
+
+```mermaid
+stateDiagram-v2
+    [*] --> FETCH
+    FETCH --> FETCH: instruction stall or reset
+    FETCH --> EXEC: successful instruction fetch
+    FETCH --> STOPPED: instruction-bus error
+    EXEC --> EXEC: waiting for RAM response
+    EXEC --> FETCH: successful register, RAM or PC move
+    EXEC --> STOPPED: HALT store or decode/alignment/data fault
+    STOPPED --> STOPPED: no requests or retirement
+    EXEC --> FETCH: reset cancels pending work
+    STOPPED --> FETCH: reset clears stop status
+```
+
+`STOPPED` is a diagram-level status overlay (`halted = 1`), not a third RTL FSM encoding; the encoded phases are FETCH and EXEC. Successful HALT advances PC, while a fault preserves that instruction's architectural state. Reset has priority over every arrow and preserves RAM.
+
+
 ## RTL interfaces
 
 `hw/mov_machine/core.py:MovCore` implements FETCH and EXEC phases. Its instruction bus transfers a 64-bit encoded instruction at `imem_addr` (an index). The data bus transfers a 32-bit word at `dmem_addr` (a byte address). Both complete on `valid && ready`. Read data/error are sampled at that edge. Error signals without a completed request have no effect.
@@ -64,3 +83,29 @@ Requests and architectural state remain stable while stalled. Explicit synchrono
 `hw/mov_machine/soc.py:MovSoC` adds synchronous block-memory-friendly ROM/RAM and a two-cycle request/completion handshake. Stores commit only at completion, so reset can cancel outstanding work. Its constructor accepts 1–16384 instructions and 1–1024 RAM words; these are validation bounds, not promises of reference-board resource fit. The emulator can use larger images and RAM within the 32-bit non-MMIO address space. FPGA capacity and place/route are the deployment limit.
 
 Architectural debug signals: `pc`, `regs`, `halted`, `fault`, `halt_code`; execution debug: `state`, `instruction`, `retire`. The core is board-neutral; the reference board wrapper synchronizes its reset button and drives status LEDs.
+
+```mermaid
+flowchart TB
+    subgraph SoC["MovSoC"]
+        ROM["Immutable instruction ROM<br/>64-bit instructions"]
+        subgraph Core["MovCore"]
+            Fetch["FETCH / EXEC control"]
+            Registers["r0-r3<br/>four 32-bit registers"]
+            PC["32-bit PC<br/>instruction index"]
+            MMIO["Internal PC/HALT MMIO<br/>alignment + fault checks"]
+            Fetch --- Registers
+            Fetch --- PC
+            Fetch --- MMIO
+        end
+        RAM["Data RAM<br/>32-bit words, aligned byte addresses"]
+        ROM -->|"instruction response<br/>data / ready / error"| Fetch
+        Fetch -->|"instruction request<br/>PC / valid"| ROM
+        MMIO -->|"ordinary RAM request<br/>address / value / write / valid"| RAM
+        RAM -->|"data response<br/>read value / ready / error"| MMIO
+    end
+    Reset["CPU reset<br/>button synchronized by board wrapper"] --> Fetch
+    Fetch --> Status["Architectural/debug outputs<br/>board uses halt/fault LEDs"]
+```
+
+Both buses complete on `valid && ready`. PC/HALT accesses are resolved inside the core and never reach RAM; the external data bus has no arithmetic device. The MOVM file header is consumed by loaders before this circuit receives the instruction words.
+
