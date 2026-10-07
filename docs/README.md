@@ -1,5 +1,7 @@
 # MOV Machine
 
+[Repository README](../README.md)
+
 MOV-only FPGA processor in Amaranth, dependency-free Rust LLVM-IR compiler/assembler/emulator, combined Nix development environment, and independent formal specifications.
 
 The compiler uses memory-alias equality and table selection from Stephen Dolan's [*mov is Turing-complete*](https://drwho.virtadpt.net/files/mov.pdf). Variable arithmetic, control flow and source-memory accesses lower to the existing four MOV instructions; the FPGA has no guest ALU. [Supported LLVM subset and ABI](compiler.md).
