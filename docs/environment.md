@@ -11,6 +11,8 @@ Source templates: [rft/nix-config](https://github.com/rft/nix-config), pinned to
 
 Added for the actual hardware workflow: SymbiYosys (`pkgs.sby`), Z3, nextpnr and icestorm. TLA+/Alloy do not directly prove generated RTL; SymbiYosys supplies that missing capability.
 
+Clang and LLVM (`llvmPackages.clang`, `llvmPackages.llvm`) produce/verify textual IR and supply independent native/`lli` reference execution. They are development/verification tools; the Rust compiler itself does not link LLVM or require it to parse supported textual input.
+
 Files:
 
 * `flake.nix`/`flake.lock`: combined devenv, nixpkgs and rust-overlay inputs, pinned dependency revisions.
@@ -24,4 +26,4 @@ Python 3.12 is explicit so Nix and uv use the same environment. `PYTHONPATH` pre
 
 The reference FPGA runs on an existing iCEBreaker board. SKiDL is retained for future board-level circuit work, but this repository does not claim to include a fabricated custom PCB or validated board schematic. SKiDL imports can warn about absent KiCad symbol/footprint libraries; those optional libraries are not supplied by the original electronics template. The FPGA bitstream build does not use them.
 
-Commands: `mov-assemble`, `mov-run`, `mov-build`, `mov-check`, `mov-formal`. [Usage](usage.md) lists their arguments. Updating environment/tool versions means regenerating the relevant lock and rerunning simulation, proofs and place/route; a dependency update is not automatically covered by prior proof results.
+Commands: `mov-compile`, `mov-assemble`, `mov-run`, `mov-build`, `mov-check`, `mov-formal`. [Usage](usage.md) lists their arguments. Updating environment/tool versions means regenerating the relevant lock and rerunning simulation, proofs and place/route; a dependency update is not automatically covered by prior proof results.

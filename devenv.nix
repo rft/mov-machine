@@ -27,6 +27,9 @@
     surfer
     nextpnr
     icestorm
+    # C frontend and independent LLVM execution/validation for compiler smoke.
+    llvmPackages.clang
+    llvmPackages.llvm
     # Formal template and RTL induction/cover tools (sby is SymbiYosys).
     tlaplus
     alloy6
@@ -41,6 +44,9 @@
 
   scripts.mov-assemble.exec = ''
     exec cargo run --manifest-path "${config.devenv.root}/Cargo.toml" -- assemble "$@"
+  '';
+  scripts.mov-compile.exec = ''
+    exec cargo run --manifest-path "${config.devenv.root}/Cargo.toml" -- compile "$@"
   '';
   scripts.mov-run.exec = ''
     exec cargo run --manifest-path "${config.devenv.root}/Cargo.toml" -- run "$@"

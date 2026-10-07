@@ -1,6 +1,12 @@
-//! Local MOV image format, strict assembly adapter, and architectural emulator.
+//! Rust LLVM-to-MOV compiler, executable format, assembler, and architectural emulator.
 use std::collections::HashMap;
 use std::fmt;
+
+pub mod compiler;
+pub mod llvm;
+
+const IMAGE_MAGIC: &[u8; 8] = b"MOVM\x01\0\0\0";
+const IMAGE_HEADER_SIZE: usize = 32;
 
 pub const PC_ADDRESS: u32 = 0xffff_fffc;
 pub const HALT_ADDRESS: u32 = 0xffff_fff8;
@@ -22,6 +28,8 @@ impl Instruction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
     instructions: Vec<Instruction>,
+    minimum_ram_words: usize,
+    result_layout: Option<(u32, u8)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageError(pub String);
@@ -33,18 +41,80 @@ impl fmt::Display for ImageError {
 impl std::error::Error for ImageError {}
 impl Image {
     pub fn new(instructions: Vec<Instruction>) -> Self {
-        Self { instructions }
+        assert!(
+            u32::try_from(instructions.len()).is_ok(),
+            "image exceeds the 32-bit PC space"
+        );
+        Self {
+            instructions,
+            minimum_ram_words: 0,
+            result_layout: None,
+        }
     }
     pub fn instructions(&self) -> &[Instruction] {
         &self.instructions
     }
+    pub fn compiled(
+        instructions: Vec<Instruction>,
+        minimum_ram_words: usize,
+        result_address: u32,
+        result_bits: u8,
+    ) -> Result<Self, ImageError> {
+        let image = Self {
+            instructions,
+            minimum_ram_words,
+            result_layout: Some((result_address, result_bits)),
+        };
+        image.validate_layout()?;
+        Ok(image)
+    }
+    pub fn minimum_ram_words(&self) -> usize {
+        self.minimum_ram_words
+    }
+    pub fn result_layout(&self) -> Option<(u32, u8)> {
+        self.result_layout
+    }
+    fn validate_layout(&self) -> Result<(), ImageError> {
+        if u32::try_from(self.instructions.len()).is_err()
+            || self.minimum_ram_words > HALT_ADDRESS as usize / 4
+        {
+            return Err(ImageError("image exceeds the machine address space".into()));
+        }
+        if let Some((address, bits)) = self.result_layout {
+            if !(1..=32).contains(&bits)
+                || address & 3 != 0
+                || u64::from(address) + u64::from(bits) * 4 > self.minimum_ram_words as u64 * 4
+            {
+                return Err(ImageError(
+                    "encoded result lies outside declared RAM".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ImageError> {
-        if !bytes.len().is_multiple_of(8) {
+        if bytes.len() < IMAGE_HEADER_SIZE || &bytes[..8] != IMAGE_MAGIC {
+            return Err(ImageError("expected a version-1 MOVM executable".into()));
+        }
+        let field =
+            |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let count = field(8) as usize;
+        let minimum_ram_words = field(12) as usize;
+        let address = field(16);
+        let bits = field(20);
+        if bytes[24..32] != [0; 8]
+            || count
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(IMAGE_HEADER_SIZE))
+                != Some(bytes.len())
+            || bits > 32
+            || (bits == 0 && address != 0)
+        {
             return Err(ImageError(
-                "image length must be a multiple of 8 bytes".into(),
+                "malformed executable header or instruction count".into(),
             ));
         }
-        let instructions = bytes
+        let instructions = bytes[IMAGE_HEADER_SIZE..]
             .as_chunks::<8>()
             .0
             .iter()
@@ -53,10 +123,23 @@ impl Image {
                 extension: u32::from_le_bytes(b[4..8].try_into().unwrap()),
             })
             .collect();
-        Ok(Self { instructions })
+        let image = Self {
+            instructions,
+            minimum_ram_words,
+            result_layout: (bits != 0).then_some((address, bits as u8)),
+        };
+        image.validate_layout()?;
+        Ok(image)
     }
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.instructions.len() * 8);
+        let mut bytes = Vec::with_capacity(IMAGE_HEADER_SIZE + self.instructions.len() * 8);
+        bytes.extend_from_slice(IMAGE_MAGIC);
+        bytes.extend_from_slice(&(self.instructions.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(self.minimum_ram_words as u32).to_le_bytes());
+        let (address, bits) = self.result_layout.unwrap_or((0, 0));
+        bytes.extend_from_slice(&address.to_le_bytes());
+        bytes.extend_from_slice(&u32::from(bits).to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
         for i in &self.instructions {
             bytes.extend_from_slice(&i.header.to_le_bytes());
             bytes.extend_from_slice(&i.extension.to_le_bytes());
@@ -131,6 +214,12 @@ impl Machine {
         if ram_words as u128 > HALT_ADDRESS as u128 / 4 {
             return Err(MachineError("RAM overlaps MMIO address space".into()));
         }
+        if ram_words < image.minimum_ram_words() {
+            return Err(MachineError(format!(
+                "image requires at least {} RAM words",
+                image.minimum_ram_words()
+            )));
+        }
         let mut ram = Vec::new();
         ram.try_reserve_exact(ram_words)
             .map_err(|e| MachineError(format!("cannot allocate RAM: {e}")))?;
@@ -156,6 +245,33 @@ impl Machine {
     }
     pub fn ram_mut(&mut self) -> &mut [u32] {
         &mut self.ram
+    }
+    /// Decode the compiler's bit-vector return ABI; native assembly returns halt_code.
+    pub fn result(&self) -> Result<Option<u32>, MachineError> {
+        if !self.state.halted || self.state.fault {
+            return Ok(None);
+        }
+        let Some((address, bits)) = self.image.result_layout() else {
+            return Ok(Some(self.state.halt_code));
+        };
+        if self.state.halt_code != address {
+            return Err(MachineError(
+                "compiled program halted with an invalid result address".into(),
+            ));
+        }
+        let mut value = 0;
+        for bit in 0..bits {
+            match self.ram[address as usize / 4 + bit as usize] {
+                0 => (),
+                4 => value |= 1 << bit,
+                _ => {
+                    return Err(MachineError(
+                        "compiled program returned a non-Boolean bit".into(),
+                    ))
+                }
+            }
+        }
+        Ok(Some(value))
     }
     pub fn reset(&mut self) {
         self.state = State {

@@ -1,4 +1,4 @@
-// Destination-first MOV syntax from upstream's four concrete definitions.
+// Destination-first syntax exercising the local machine's four MOV forms.
 .text
 .globl _start
 _start:

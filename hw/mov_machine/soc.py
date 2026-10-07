@@ -4,19 +4,14 @@ from amaranth.lib.memory import Memory
 from .core import MovCore
 
 
-def read_image(path):
-    data = path.read_bytes()
-    if not data or len(data) % 8:
-        raise ValueError("image must contain a nonempty sequence of 8-byte MOV instructions")
-    return [int.from_bytes(data[i:i + 8], "little") for i in range(0, len(data), 8)]
 
 
 class MovSoC(Elaboratable):
     """Core with synchronous ROM and RAM, suitable for FPGA block memories."""
 
     def __init__(self, program, ram_words=256):
-        if not program or len(program) > 512:
-            raise ValueError("reference FPGA ROM supports 1..512 instructions")
+        if not program or len(program) > 16384:
+            raise ValueError("reference FPGA ROM supports 1..16384 instructions; physical fit is checked by place/route")
         if not 1 <= ram_words <= 1024:
             raise ValueError("reference FPGA RAM supports 1..1024 words")
         if any(not 0 <= word < (1 << 64) for word in program):

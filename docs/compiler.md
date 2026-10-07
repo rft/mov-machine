@@ -1,36 +1,80 @@
-# Movsucator compatibility
+# LLVM IR → MOV compiler
 
-Inspected upstream: [Hussdev0/movsucator](https://github.com/Hussdev0/movsucator), revision [`5cdfb470102047e603e5f5c0d96650eec42d21cc`](https://github.com/Hussdev0/movsucator/tree/5cdfb470102047e603e5f5c0d96650eec42d21cc).
+The compiler is implemented in Rust in `src/llvm.rs` (textual LLVM frontend) and `src/compiler.rs` (MOV lowering). It replaces the earlier dependency on Hussdev0/movsucator; no upstream backend, native object emitter, or x86 MOVfuscator output is required.
 
-## What is implemented
+```text
+C --Clang--> textual LLVM IR --Rust--> MOVM executable
+                                        ├─ Rust emulator
+                                        └─ Amaranth MOV core
+```
 
-The assembly adapter implements the four concrete instructions in upstream [MovsucatorInstrInfo.td](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/lib/Target/Movsucator/MovsucatorInstrInfo.td): `MOV_rr`, `MOV_ri`, `MOV_rm`, `MOV_mr`. Those definitions print destination-first `mov dst, src`, with brackets on memory operands. The four named suffixes are also accepted for explicit forms.
+## Source contract
 
-Registers follow upstream [MovsucatorRegisterInfo.td](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/lib/Target/Movsucator/MovsucatorRegisterInfo.td): `r0`–`r3`, 32 bits. The status document mentions A/B/C/S, but those are not the concrete register names defined there; this assembler does not invent aliases.
+Supported scalar values: `i1`, `i8`, `i16`, `i32`, and 32-bit opaque `ptr`. Storage aggregates are fixed, nested arrays of supported elements; array-valued SSA operations are not supported. Logical source memory is little-endian; an explicit data layout must use 32-bit default-address-space pointer size/alignment/index width and the target's standard scalar ABI alignments. Without an explicit layout, this target's 32-bit layout applies.
 
-`examples/copy.s` is a **handwritten compatibility fixture**, not claimed compiler-generated output. It exercises all four forms, labels, RAM, PC and halt. `mov-machine assemble` converts compatible textual instructions into the [local encoding](architecture.md). No upstream executable was built or run during verification.
+Operations:
 
-## Why arbitrary compiler output cannot run yet
+* `add`, `sub`, `mul`, `udiv`, `sdiv`, `urem`, `srem`.
+* `and`, `or`, `xor`, `shl`, `lshr`, `ashr` with variable operands.
+* Every integer `icmp` predicate and `select`.
+* `trunc`, `zext`, `sext`, scalar `bitcast`, `ptrtoint`, `inttoptr`.
+* Basic blocks, `br`, parallel edge-specific `phi` assignments, `ret`, `unreachable`.
+* Acyclic direct calls, including void calls and multiple return blocks, lowered by inlining with independent call-site storage.
+* Integer/array globals, constant-sized entry-block `alloca`, scalar loads/stores, and scalar/nested-array `getelementptr` with variable and signed indices.
 
-At the pinned revision:
+The frontend validates the supported typed IR and rejects unsupported executable constructs. Common nonexecuting Clang attributes, metadata and debug bookkeeping do not add operations to the target. External/indirect/variadic calls, recursion, floating point, vectors, structs, atomic/volatile memory, exception handling, dynamic allocations, unsupported executable intrinsics, relocatable global initializers, executable constant expressions, explicit `undef`/`poison` operands and quoted all-numeric identifiers are not supported. It is an integer LLVM backend, **not all of LLVM or a libc implementation**.
 
-* [MovsucatorMCCodeEmitter.cpp](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/lib/Target/Movsucator/MCTargetDesc/MovsucatorMCCodeEmitter.cpp) and [MovsucatorInstPrinter.cpp](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/lib/Target/Movsucator/MCTargetDesc/MovsucatorInstPrinter.cpp) are empty.
-* [MovsucatorInstrFormats.td](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/lib/Target/Movsucator/MovsucatorInstrFormats.td) assigns only the opcode bits of a nominal four-byte instruction. It does not encode operand registers, addresses or a full 32-bit immediate.
-* Every concrete register currently has hardware encoding zero.
-* [MovsucatorExpandPseudo.cpp](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/lib/Target/Movsucator/MovsucatorExpandPseudo.cpp) still emits `MOV_ADD`, `MOV_NEG`, logical operations and `MOV_BR_NZ`, with comments delegating arithmetic to hardware. These are not pure data-copy MOV operations; several referenced definitions/register names are inconsistent with the concrete definitions.
-* Upstream [basic-mov.ll](https://github.com/Hussdev0/movsucator/blob/5cdfb470102047e603e5f5c0d96650eec42d21cc/test/CodeGen/Movsucator/basic-mov.ll) also checks pseudo-ops and memory suffix examples inconsistent with the instruction definitions.
+LLVM `nsw`, `nuw`, `exact` and `inbounds` specify when source executions are defined. The compiler preserves defined-input behavior; it does not implement a separate poison tracking engine or promise outcomes for violated source constraints. Wrapping arithmetic and concrete overshift results can refine poison cases without eagerly faulting an unselected result. Division by zero and invalid target memory access deliberately execute an invalid physical load and produce a real machine fault. Signed division truncates toward zero; remainder follows the numerator's sign.
 
-The FPGA therefore cannot honestly be advertised as accepting all output from this compiler. It accepts the defined pure-MOV assembly subset, not upstream objects, LLVM IR, ELF, x86 MOVfuscator output, or unresolved arithmetic/call/return/frame pseudo-ops. Unsupported instructions fail with a line-numbered error instead of being silently dropped or given invented meanings.
+## How the paper is used
 
-Complete compatibility needs an upstream backend that emits fully lowered pure-MOV sequences, a specified ABI/startup/data layout, and either compatible textual assembly or a documented binary encoding. Changing that compiler is outside this repository; the missing contract cannot be supplied by a hardware proof.
+Reference: Stephen Dolan, [*mov is Turing-complete*](https://drwho.virtadpt.net/files/mov.pdf), especially §§4–6.
 
-## Adapter grammar
+The paper proves that memory aliasing can test equality and that two-element tables can select a value without a conditional instruction. Its complete construction simulates a Turing machine; it does **not supply an LLVM arithmetic backend**.
 
-* Registers: lowercase `r0`–`r3`; all four are writable.
-* Constants: decimal or `0x` hex, optional `#` prefix, range `-2147483648` through `4294967295`.
-* Labels: case-sensitive identifiers, resolve to instruction indices in immediate operands. Multiple labels can name the same instruction.
-* Memory: `[rN]`, `[rN + number]`, `[rN - number]`; offsets encoded modulo 2³². No symbols/data relocations or scaled index addressing.
-* Comments: `;` and `//`. `#` is an immediate prefix, not a comment.
-* Accepted metadata: `.text`, `.globl`, `.global`, `.type`, `.size`, `.p2align`. Code alignment metadata does not insert padding in the local index-based format. Meaningful data/layout directives, unknown sections and unknown directives are rejected.
+This compiler directly lowers LLVM using those primitives rather than inserting a Turing-machine interpreter:
 
-A compatible complete program must explicitly halt using the HALT MMIO store; MOV return/frame pseudo-ops are not a runtime. See [usage](usage.md) for assembly, execution and trace commands.
+1. Runtime integer/pointer values are little-endian **bit vectors**. Each bit occupies one physical RAM word containing `0` or `4`.
+2. Physical words at byte addresses 0 and 4 are reserved scratch. Encoded bits are also addresses of these scratch words. To compare bits `a` and `b`, write zero through `a`, write four through `b`, then load through `a`. The result is four exactly when the addresses alias. Arbitrary LLVM integers are never used as physical pointers.
+3. Selection stores the false and true alternatives in the two scratch words and loads `[condition + 0]`. Encoded condition 0/4 selects the appropriate word. More general tables use the same fixed-base displacement technique.
+4. Boolean operations build ripple-carry add/subtract networks, partial-product multiplication, restoring division/remainder, and barrel shifts. Arithmetic happens through MOV loads/stores, **not through arithmetic opcodes, host callbacks, or MMIO ALUs**.
+5. Conditional control flow selects one of two native instruction indices and MOVs it into PC MMIO. This adapts the paper's looping mechanism to this FPGA; it is not a literal x86 reproduction.
+6. SSA values live in RAM. `r0`–`r2` are working registers; `r3` stays zero for fixed-address accesses. This uses the machine's constant displacements instead of reproducing the paper's circular scratch-list register reduction.
+
+Code is immutable. There is no self-modification or runtime code generation. Fully constant operations and identities may be folded at compile time; variable operands still execute MOV networks.
+
+## Logical memory versus physical RAM
+
+LLVM pointers contain logical byte addresses, represented as 32-bit bit vectors. Byte zero is null and cannot be dereferenced. Globals and static call-site allocations receive aligned logical ranges beginning above zero.
+
+A source byte occupies eight physical Boolean words. A binary tree maps a valid logical byte address to the physical start of its bits. Traversal loads both children and selects one with a scratch table; no new register-indexed instruction is needed. Whole-access bounds checks run before loads/stores. Adjacent source bytes map to adjacent bit slots, preserving little-endian typed loads and byte aliasing.
+
+`--memory-bytes` selects a power-of-two logical capacity, 2–128 bytes (default 32). Source-memory storage is allocated only when needed. Its physical overhead is `8*M + 2*(M-1)` words: 318 words at 32 logical bytes, before SSA values, result storage and scratch. The default compiler RAM budget is 1024 words; the emulator can use a larger explicit budget. The reference FPGA supports at most 1024 physical RAM words.
+
+Per-instruction scratch is reused; generated SSA/call-site storage remains distinct. Startup reinitializes private RAM, globals, arguments and mapping tables, so CPU reset can rerun the program even though the hardware preserves RAM. Static function-local storage is reused on repeated executions of the same inlined call site; source programs must respect LLVM object lifetime rules.
+
+The compiler reports exact instruction count and required RAM and rejects insufficient storage before emitting an executable. Valid source programs can exceed the reference FPGA's ROM/RAM resources; successful emulation does not establish physical fit.
+
+## Return ABI
+
+A MOV-only machine cannot cheaply reconstruct an arbitrary native 32-bit integer from separate runtime bits. Compiled programs therefore return their encoded bit vector in a declared RAM region and halt with that region's **physical address**.
+
+The versioned MOVM image records required RAM, result address and result width. `Machine::result()` decodes the vector after successful halt. The CLI adds `result` to the final JSON object for compiled images. `halt_code` remains the architectural address; it is **not** the source function's integer result. A void entry returns decoded zero.
+
+Host decoding is output interpretation, not guest arithmetic execution. Native assembly images retain the native `halt_code` ABI. See [architecture](architecture.md) for the image format and [usage](usage.md) for CLI commands.
+
+## Assembly interface
+
+The handwritten assembly path remains useful for inspecting the machine and testing primitives:
+
+* Destination-first `mov` and matching `.rr`, `.ri`, `.rm`, `.mr` suffixes.
+* Registers `r0`–`r3`; decimal/hex constants with optional `#`, range `-2147483648`–`4294967295`.
+* Labels resolve to instruction indices. Memory operands: `[rN]`, `[rN + number]`, `[rN - number]`.
+* `;`/`//` comments; `.text`, `.globl`, `.global`, `.type`, `.size`, `.p2align` metadata. Alignment metadata does not add padding to index-based code.
+* Unknown instructions and layout/data directives fail. Handwritten programs explicitly halt through HALT MMIO.
+
+## Verification boundary
+
+Compiler-generated output is checked against LLVM/native reference executions and both Rust and cycle-accurate RTL execution. Behavioral regressions exercise variable arithmetic, signedness, overflow/carry, division faults, shifts, loops/PHI swaps, calls, byte memory, aliases, bounds and reset.
+
+Existing RTL induction establishes the machine's ISA, not a theorem that this compiler preserves all supported LLVM programs. No whole-compiler formal correctness claim is made. [Formal claims](formal.md) and [observed verification](verification.md) distinguish these layers.

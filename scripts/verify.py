@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "hw"))
 from amaranth.sim import Simulator
 from mov_machine.core import MovCore
 from mov_machine.soc import MovSoC
+from mov_machine.image import ExecutableImage, read_image
 
 
 def command(*args, **kwargs):
@@ -24,7 +25,7 @@ def snapshot(ctx, core, steps):
             "halt_code": ctx.get(core.halt_code), "steps": steps}
 
 
-def simulate(program, ram_words, stalls=False):
+def simulate(program, ram_words, stalls=False, capture_memory=False, max_cycles=20000):
     """Compare at architectural boundaries, not at implementation cycle counts."""
     dut = MovCore() if stalls else MovSoC(program, ram_words)
     core = dut if stalls else dut.core
@@ -38,7 +39,7 @@ def simulate(program, ram_words, stalls=False):
         ctx.set(dut.reset, 1)
         await ctx.tick()
         ctx.set(dut.reset, 0)
-        for _ in range(20000):
+        for _ in range(max_cycles):
             if stalls:
                 pc = ctx.get(core.pc)
                 address = ctx.get(core.dmem_addr)
@@ -73,12 +74,14 @@ def simulate(program, ram_words, stalls=False):
                     await ctx.tick()
                     assert not ctx.get(core.imem_valid) and not ctx.get(core.dmem_valid)
                     assert snapshot(ctx, core, len(trace)) == final
+                if capture_memory and not stalls:
+                    memory[:] = [ctx.get(dut.ram.data[i]) for i in range(ram_words)]
                 return
         raise AssertionError("simulation cycle budget exhausted")
 
     sim.add_testbench(bench)
     sim.run()
-    return trace
+    return (trace, memory) if capture_memory else trace
 
 
 def reset_smoke():
@@ -112,6 +115,49 @@ def reset_smoke():
 
     sim.add_testbench(bench)
     sim.run()
+
+
+def compiler_smoke(executable, directory):
+    expected_results = {"sum": 42, "loop": 55, "memory": 42}
+    inputs = []
+    for name, expected in expected_results.items():
+        source = ROOT / "examples/llvm" / f"{name}.ll"
+        command("opt", "-passes=verify", "-disable-output", str(source))
+        reference = subprocess.run(["lli", str(source)], cwd=ROOT, capture_output=True, text=True)
+        assert reference.returncode == expected, f"LLVM reference {name}: {reference.stderr}"
+        inputs.append((name, source, [], expected))
+    clang_ir = directory / "sum-clang.ll"
+    command("clang", "--target=i386-none-elf", "-S", "-emit-llvm", "-O1", "-fwrapv",
+            str(ROOT / "examples/llvm/sum.c"), "-o", str(clang_ir))
+    command("opt", "-passes=verify", "-disable-output", str(clang_ir))
+    native = directory / "sum-native"
+    command("clang", str(ROOT / "examples/llvm/sum.c"), "-O1", "-o", str(native))
+    reference = subprocess.run([str(native)], cwd=ROOT)
+    assert reference.returncode == 42, "native C reference returned an unexpected value"
+    inputs.append(("clang-sum", clang_ir, ["--entry", "sum", "--arg", "17", "--arg", "25"], 42))
+    for name, source, options, expected_result in inputs:
+        path = directory / f"{name}-compiled.mov"
+        command(str(executable), "compile", str(source), str(path), *options)
+        image = read_image(path)
+        run = subprocess.run([str(executable), "run", str(path), "--max-steps", "500000", "--trace"],
+                             cwd=ROOT, capture_output=True, text=True)
+        assert run.returncode == 0, f"{name}: {run.stderr}"
+        rows = [json.loads(row) for row in run.stdout.splitlines()]
+        expected, final = rows[:-1], rows[-1]
+        assert final["result"] == expected_result, f"{name}: wrong compiled result {final}"
+        ram_words = max(256, image.minimum_ram_words)
+        for stalls in (False, True):
+            actual, memory = simulate(image.program, ram_words, stalls, True,
+                                      max(20000, len(expected) * 32))
+            if actual != expected:
+                first = next((i for i, pair in enumerate(zip(actual, expected)) if pair[0] != pair[1]),
+                             min(len(actual), len(expected)))
+                raise AssertionError(f"{name}, stalls={stalls}, first different step {first}: "
+                                     f"RTL {actual[first:first + 1]}, Rust {expected[first:first + 1]}")
+            assert image.decode_result(memory, final["halt_code"]) == expected_result
+        print(f"PASS LLVM {name}: result {expected_result}, {len(expected)} MOV steps, "
+              f"{image.minimum_ram_words} RAM words (LLVM/native, Rust, SoC and stalled core)")
+    return len(inputs)
 
 
 def main():
@@ -162,7 +208,7 @@ def main():
         for name, raw in [("bad-opcode", 4 << 26), ("reserved", 1),
                           ("rr-extension", 1 << 32), ("ri-src", (1 << 26) | (1 << 22))]:
             image = directory / f"{name}.mov"
-            image.write_bytes(raw.to_bytes(8, "little"))
+            image.write_bytes(ExecutableImage((raw,)).to_bytes())
             images.append((name, image))
         for name, image in images:
             run = subprocess.run([str(executable), "run", str(image), "--max-steps", "1000", "--trace"], cwd=ROOT, capture_output=True, text=True)
@@ -170,14 +216,16 @@ def main():
             rows = [json.loads(row) for row in run.stdout.splitlines()]
             expected, final = rows[:-1], rows[-1]
             assert final["halted"], f"{name}: did not terminate"
-            program = [int.from_bytes(image.read_bytes()[i:i + 8], "little") for i in range(0, image.stat().st_size, 8)]
+            program = read_image(image).program
             for stalls in (False, True):
                 actual = simulate(program, 256, stalls)
                 assert actual == expected, f"{name}, stalls={stalls}:\nRTL {actual}\nRust {expected}"
             print(f"PASS {name}: {len(expected)} architectural steps (SoC and stalled core)")
+        compiled_cases = compiler_smoke(executable, directory)
     reset_smoke()
     print("PASS reset: cancelled store, preserved RAM, successful restart")
     print(f"PASS {len(images)} differential programs")
+    print(f"PASS {compiled_cases} real LLVM/C compiler differential programs")
 
 
 if __name__ == "__main__":
