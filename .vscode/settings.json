@@ -1,0 +1,9 @@
+{
+  // Make the devenv toolchain available to terminals and language servers.
+  "direnv.restart.automatic": true,
+  // Stable path to the devenv-managed Python environment.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.devenv/state/venv/bin/python",
+  "python.terminal.activateEnvInCurrentTerminal": true,
+  "python.analysis.extraPaths": ["${workspaceFolder}/hw"],
+  "rust-analyzer.check.command": "clippy"
+}

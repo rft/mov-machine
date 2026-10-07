@@ -1,0 +1,25 @@
+# Devenv and direnv
+.devenv*
+devenv.local.nix
+.direnv/
+
+# Rust
+/target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Generated FPGA, simulation, and formal artifacts
+/build/
+states/
+*.toolbox/
+*_TTrace_*
+
+# Nix
+result
+result-*
+
+# flake.lock, uv.lock, and Cargo.lock are intentionally tracked.

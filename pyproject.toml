@@ -1,0 +1,15 @@
+[project]
+name = "mov-machine"
+version = "0.1.0"
+description = "MOV-only Amaranth FPGA machine and electronics development tools"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "amaranth>=0.5,<0.6",
+    "amaranth-boards",
+    "skidl",
+    "kinparse",
+    "matplotlib",
+]
+
+[tool.uv]
+package = false
